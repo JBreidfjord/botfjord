@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import timeit
 from dataclasses import dataclass
+from math import log, sqrt
 
 from chess import Board, Move
+from tqdm.auto import tqdm
 
 
 @dataclass
 class Branch:
     prior: float
     visit_count: int = 0
-    total_value: float = 0
+    total_value: float = 0.0
 
 
 class Node:
@@ -98,9 +101,125 @@ class MCTS:
         evaluation_function: function,
         prior_function: function,
         num_rounds: int = 10000,
-        temperature: float = 5.0,
+        temperature: float = sqrt(2),
+        verbose: bool = False,
     ):
+        """
+        Monte Carlo Tree Search\n
+        Args:
+            evaluation_function & prior_function:
+                The functions to calculate the value of game states.\n\t
+                Prior function should be a small, fast calculation 
+                used to quickly determine branch priority without searching.
+                Function should return dict[Move, float].\n\t
+                Evaluation function is the main function used for
+                calculating the value of a state.
+                Function should return float.
+            num_rounds: Maximum number of search rounds before returning the selected move.
+            temperature: Constant value that determines the exploration/exploitation 
+            trade-off when searching.
+        """
         self._eval_func = evaluation_function
         self._prior_func = prior_function
         self.num_rounds = num_rounds
         self._c = temperature
+        self.verbose = verbose
+
+    def set_functions(self, evaluation_function: function = None, prior_function: function = None):
+        if isinstance(evaluation_function, function):
+            self._eval_func = evaluation_function
+        if isinstance(prior_function, function):
+            self._prior_func = prior_function
+
+    def set_temperature(self, temperature: float):
+        self._c = temperature
+
+    def create_node(self, game_state: Board, move: Move = None, parent: Node = None):
+        """
+        Creates a new MCTS Node and calculates value and priors\n
+        Node is added as a child if parent node is given
+        """
+        eval_start_time = timeit.default_timer() if self.verbose else 0.0
+
+        priors = self._prior_func(game_state)
+        value = self._eval_func(game_state)
+
+        if self.verbose:
+            self.eval_time += timeit.default_timer() - eval_start_time
+
+        node = Node(game_state, value, priors, parent, move)
+        if parent is not None and not game_state.is_game_over():
+            parent.add_child(move, node)
+
+        return node
+
+    def select_branch(self, node: Node):
+        """
+        Selects next branch to search based on the PUCT formula:
+            q + c * p * (sqrt( ln(N) / n ))
+            \n\tWhere:
+            q is the expected value of the node;\n
+            c is the search temperature, a constant;\n
+            p is the prior value assigned to the node;\n
+            N is the total visit count of the parent node;\n
+            n is the total visit count of the node;
+        """
+        total_n = node.total_visit_count
+
+        def score_branch(move: Move):
+            q = node.expected_value(move)
+            p = node.prior(move)
+            n = node.visit_count(move)
+            return q + self._c * p * (sqrt(log(total_n) / (n + 1)))
+
+        return max(node.moves(), key=score_branch)
+
+    def select_move(self, game_state: Board):
+        """The core of the MCTS class.
+        Starts a search from the given Board and returns the selected Move."""
+        # Return early if only 1 legal move available
+        if game_state.legal_moves.count() == 1:
+            return next(game_state.generate_legal_moves())
+
+        if self.verbose:
+            self.eval_time = 0.0
+            start_time = timeit.default_timer()
+        t = tqdm(range(self.num_rounds), leave=False, ncols=80, disable=not self.verbose)
+
+        root = self.create_node(game_state)
+        for _ in t:
+            node = root
+            next_move = self.select_branch(node)
+
+            while node.has_child(next_move):
+                node: Node = node.get_child(next_move)
+                next_move = self.select_branch(node)
+
+            new_state = node.state.copy(stack=False)
+            new_state.push(next_move)
+            child_node = self.create_node(new_state, move=next_move, parent=node)
+
+            move = next_move
+            value = -child_node.value
+            while node is not None:
+                node.record_visit(move, value)
+                move = node.last_move
+                node = node.parent
+                value = -value
+
+            if self.verbose:
+                top_5 = sorted(root.moves(), key=root.visit_count, reverse=True)[:5]
+                top_5 = [f"{game_state.san(x)} {root.visit_count(x)}" for x in top_5]
+                t.set_description(" | ".join(top_5))
+
+            # Return early if a branch is guaranteed
+            if root.check_visit_counts(self.num_rounds):
+                break
+
+        if self.verbose:
+            run_time = timeit.default_timer() - start_time - self.eval_time
+            print(" | ".join(top_5))
+            print(f"Eval time: {self.eval_time:.2f} | Calc time: {run_time:.2f} |", end=" ")
+            print(f"{self.eval_time / (self.eval_time + run_time) * 100:.2f}%")
+
+        return max(root.moves(), key=root.visit_count)
