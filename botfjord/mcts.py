@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import timeit
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from math import log, sqrt
 
 import numpy as np
 from chess import Board, Move
-from tqdm.auto import tqdm
 
 
 @dataclass
@@ -14,6 +14,20 @@ class Branch:
     prior: float
     visit_count: int = 0
     total_value: float = 0.0
+
+
+class Limit:
+    def __init__(self, time: float = None, nodes: int = None):
+        """
+        Search termination condition. Defaults to 3200 nodes if no args given.\n
+        Args:
+            time: seconds as float
+            nodes: search rounds as int
+        """
+        self.time = time
+        self.nodes = nodes
+        if self.time is None and self.nodes is None:
+            nodes = 3200
 
 
 class Node:
@@ -101,10 +115,8 @@ class MCTS:
         self,
         evaluation_function: function,
         prior_function: function,
-        num_rounds: int = 3200,
         temperature: float = sqrt(2),
         noise: float = 0.3,
-        verbose: bool = False,
     ):
         """
         Monte Carlo Tree Search\n
@@ -112,23 +124,21 @@ class MCTS:
             evaluation_function & prior_function:
                 The functions to calculate the value of game states.\n\t
                 Prior function should be a small, fast calculation 
-                used to quickly determine branch priority without searching.
+                used to quickly determine branch priority without searching.\n\t
                 Function should return a dict[Move, float] probability distribution
                 over all legal moves.\n\t
                 Evaluation function is the main function used for
-                calculating the value of a state.
-                Function should return float.
-            num_rounds: Maximum number of search rounds before returning the selected move.
-            temperature: Constant value that determines the exploration/exploitation 
-            trade-off when searching.
+                calculating the value of a state.\n\t
+                Function should return float.\n
+            temperature: Constant value that determines the exploration/exploitation
+            trade-off when searching.\n
             noise: Alpha value for Dirichlet noise
         """
         self._eval_func = evaluation_function
         self._prior_func = prior_function
-        self.num_rounds = num_rounds
         self._c = temperature
         self.noise = noise
-        self.verbose = verbose
+        self._rng = np.random.default_rng()
 
     def set_functions(self, evaluation_function: function = None, prior_function: function = None):
         if isinstance(evaluation_function, function):
@@ -144,17 +154,12 @@ class MCTS:
         Creates a new MCTS Node and calculates value and priors\n
         Node is added as a child if parent node is given
         """
-        eval_start_time = timeit.default_timer() if self.verbose else 0.0
-
         priors = self._prior_func(game_state)
         value = self._eval_func(game_state)
 
-        if self.verbose:
-            self.eval_time += timeit.default_timer() - eval_start_time
-
         # Add Dirichlet noise
         if self.noise is not None:
-            noise = np.random.dirichlet([self.noise] * game_state.legal_moves.count())
+            noise = self._rng.dirichlet([self.noise] * game_state.legal_moves.count())
             for (mv, val), noise_val in zip(priors.items(), noise):
                 priors[mv] = (0.5 * val) + (0.5 * noise_val)
 
@@ -185,20 +190,16 @@ class MCTS:
 
         return max(node.moves(), key=score_branch)
 
-    def select_move(self, game_state: Board):
+    def search(self, game_state: Board, limit: Limit = Limit(nodes=3200)):
         """The core of the MCTS class.
         Starts a search from the given Board and returns the selected Move."""
-        # Return early if only 1 legal move available
-        if game_state.legal_moves.count() == 1:
-            return next(game_state.generate_legal_moves())
 
-        if self.verbose:
-            self.eval_time = 0.0
-            start_time = timeit.default_timer()
-        t = tqdm(range(self.num_rounds), leave=False, ncols=100, disable=not self.verbose)
+        _active = True
+        i = 0
+        start_time = timeit.default_timer()
 
         root = self.create_node(game_state)
-        for _ in t:
+        while _active:
             node = root
             next_move = self.select_branch(node)
 
@@ -218,21 +219,64 @@ class MCTS:
                 node = node.parent
                 value = -value
 
-            if self.verbose:
-                top_5 = sorted(root.moves(), key=root.visit_count, reverse=True)[:5]
-                top_5 = [f"{game_state.san(x)} {root.visit_count(x)}" for x in top_5]
-                t.set_description(" | ".join(top_5), refresh=False)
+            if limit.nodes is not None:
+                if i >= limit.nodes or root.check_visit_counts(limit.nodes):
+                    _active = False
+                else:
+                    i += 1
+            if limit.time is not None:
+                if timeit.default_timer() - start_time >= limit.time:
+                    _active = False
 
-            # Return early if a branch is guaranteed
-            if root.check_visit_counts(self.num_rounds):
-                break
+        return [(move, root.visit_count(move)) for move in root.moves()]
 
-        if self.verbose:
-            run_time = timeit.default_timer() - start_time - self.eval_time
-            print(" | ".join(top_5))
-            print(f"Eval time: {self.eval_time:.2f} | Calc time: {run_time:.2f} |", end=" ")
-            print(f"Tot time: {self.eval_time + run_time:.2f} |", end=" ")
-            print(f"{self.eval_time / (self.eval_time + run_time) * 100:.2f}% |", end=" ")
-            print(f"{((self.eval_time + run_time) / root.total_visit_count) * 1000:.2f}ms/v")
+    def _params(self):
+        return {
+            "evaluation_function": self._eval_func,
+            "prior_function": self._prior_func,
+            "temperature": self._c,
+            "noise": self.noise,
+        }
 
-        return max(root.moves(), key=root.visit_count)
+
+def worker(agent_params: dict, limit_params: dict, fen: str):
+    agent = MCTS(**agent_params)
+    limit = Limit(**limit_params)
+    game_state = Board(fen)
+    result = agent.search(game_state, limit)
+    move_dict = {}
+    for move, visit_count in result:
+        move_dict[move] = visit_count
+    return move_dict
+
+
+def mp_search(
+    agent: MCTS, game_state: Board, limit: Limit, processes: int = 16, verbose: bool = True
+):
+    # Return early if only 1 legal move available
+    if game_state.legal_moves.count() == 1:
+        return next(game_state.generate_legal_moves())
+    fen = game_state.fen()
+    agent_params = agent._params()
+    limit_params = {"time": limit.time, "nodes": limit.nodes}
+
+    move_dict = {move: 0 for move in game_state.legal_moves}
+    start_time = timeit.default_timer()
+    with ProcessPoolExecutor() as pool:
+        futures = [pool.submit(worker, agent_params, limit_params, fen) for _ in range(processes)]
+        for future in futures:
+            result = future.result()
+            for move in game_state.legal_moves:
+                move_dict[move] += result[move]
+
+    if verbose:
+        top_5 = sorted(move_dict.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_5 = [f"{game_state.san(mv)} {vc}" for mv, vc in top_5]
+        run_time = timeit.default_timer() - start_time
+        nodes = sum(move_dict.values())
+        print(
+            " | ".join(top_5)
+            + f" | {round(nodes / run_time)} nodes/s ({run_time:.2f}s | {nodes} nodes)"
+        )
+
+    return max(move_dict.items(), key=lambda x: x[1])[0]
