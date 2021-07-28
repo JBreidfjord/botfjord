@@ -4,6 +4,7 @@ import timeit
 from dataclasses import dataclass
 from math import log, sqrt
 
+import numpy as np
 from chess import Board, Move
 from tqdm.auto import tqdm
 
@@ -19,8 +20,8 @@ class Node:
     def __init__(
         self,
         state: Board,
-        priors: dict[Move, float],
         value: float,
+        priors: dict[Move, float],
         parent: Node = None,
         last_move: Move = None,
     ):
@@ -90,9 +91,9 @@ class Node:
     def check_visit_counts(self, num_rounds: int):
         """Returns True if the most visited branch is guaranteed to be selected
         for the given number of search rounds"""
-        visit_counts = sorted(self.branches.values(), key=lambda b: b.visit_count)
+        branches = sorted(self.branches.values(), key=lambda b: b.visit_count)
         remaining_rounds = num_rounds - self.total_visit_count
-        return visit_counts[-1].visit_count >= visit_counts[-2].visit_count + remaining_rounds
+        return branches[-1].visit_count >= branches[-2].visit_count + remaining_rounds
 
 
 class MCTS:
@@ -100,8 +101,9 @@ class MCTS:
         self,
         evaluation_function: function,
         prior_function: function,
-        num_rounds: int = 10000,
+        num_rounds: int = 3200,
         temperature: float = sqrt(2),
+        noise: float = 0.3,
         verbose: bool = False,
     ):
         """
@@ -111,18 +113,21 @@ class MCTS:
                 The functions to calculate the value of game states.\n\t
                 Prior function should be a small, fast calculation 
                 used to quickly determine branch priority without searching.
-                Function should return dict[Move, float].\n\t
+                Function should return a dict[Move, float] probability distribution
+                over all legal moves.\n\t
                 Evaluation function is the main function used for
                 calculating the value of a state.
                 Function should return float.
             num_rounds: Maximum number of search rounds before returning the selected move.
             temperature: Constant value that determines the exploration/exploitation 
             trade-off when searching.
+            noise: Alpha value for Dirichlet noise
         """
         self._eval_func = evaluation_function
         self._prior_func = prior_function
         self.num_rounds = num_rounds
         self._c = temperature
+        self.noise = noise
         self.verbose = verbose
 
     def set_functions(self, evaluation_function: function = None, prior_function: function = None):
@@ -147,6 +152,12 @@ class MCTS:
         if self.verbose:
             self.eval_time += timeit.default_timer() - eval_start_time
 
+        # Add Dirichlet noise
+        if self.noise is not None:
+            noise = np.random.dirichlet([self.noise] * game_state.legal_moves.count())
+            for (mv, val), noise_val in zip(priors.items(), noise):
+                priors[mv] = (0.5 * val) + (0.5 * noise_val)
+
         node = Node(game_state, value, priors, parent, move)
         if parent is not None and not game_state.is_game_over():
             parent.add_child(move, node)
@@ -170,7 +181,7 @@ class MCTS:
             q = node.expected_value(move)
             p = node.prior(move)
             n = node.visit_count(move)
-            return q + self._c * p * (sqrt(log(total_n) / (n + 1)))
+            return q + self._c * p * (sqrt(log(total_n) / (n + 1e-7)))
 
         return max(node.moves(), key=score_branch)
 
@@ -184,7 +195,7 @@ class MCTS:
         if self.verbose:
             self.eval_time = 0.0
             start_time = timeit.default_timer()
-        t = tqdm(range(self.num_rounds), leave=False, ncols=80, disable=not self.verbose)
+        t = tqdm(range(self.num_rounds), leave=False, ncols=100, disable=not self.verbose)
 
         root = self.create_node(game_state)
         for _ in t:
@@ -210,7 +221,7 @@ class MCTS:
             if self.verbose:
                 top_5 = sorted(root.moves(), key=root.visit_count, reverse=True)[:5]
                 top_5 = [f"{game_state.san(x)} {root.visit_count(x)}" for x in top_5]
-                t.set_description(" | ".join(top_5))
+                t.set_description(" | ".join(top_5), refresh=False)
 
             # Return early if a branch is guaranteed
             if root.check_visit_counts(self.num_rounds):
@@ -220,6 +231,8 @@ class MCTS:
             run_time = timeit.default_timer() - start_time - self.eval_time
             print(" | ".join(top_5))
             print(f"Eval time: {self.eval_time:.2f} | Calc time: {run_time:.2f} |", end=" ")
-            print(f"{self.eval_time / (self.eval_time + run_time) * 100:.2f}%")
+            print(f"Tot time: {self.eval_time + run_time:.2f} |", end=" ")
+            print(f"{self.eval_time / (self.eval_time + run_time) * 100:.2f}% |", end=" ")
+            print(f"{((self.eval_time + run_time) / root.total_visit_count) * 1000:.2f}ms/v")
 
         return max(root.moves(), key=root.visit_count)
