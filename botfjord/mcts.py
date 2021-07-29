@@ -109,6 +109,14 @@ class Node:
         remaining_rounds = num_rounds - self.total_visit_count
         return branches[-1].visit_count >= branches[-2].visit_count + remaining_rounds
 
+    def check_visit_ratio(self, factor: float = 0.75, minimum: int = 100):
+        """Returns True if the most visited branch has been visited more than
+        the total visit count * factor and total visit count is above minimum"""
+        if self.total_visit_count < minimum:
+            return False
+        branch = max(self.branches.values(), key=lambda b: b.visit_count)
+        return branch.visit_count > self.total_visit_count * factor
+
 
 class MCTS:
     def __init__(
@@ -218,6 +226,9 @@ class MCTS:
                 move = node.last_move
                 node = node.parent
                 value = -value
+
+            if root.check_visit_ratio():
+                _active = False
 
             if limit.nodes is not None:
                 if i >= limit.nodes or root.check_visit_counts(limit.nodes):
