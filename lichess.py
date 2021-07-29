@@ -56,6 +56,7 @@ class Game(threading.Thread):
                     )
                     self.board = chess.Board(self.initial_fen)
                     event = event["state"]
+                    self.get_game_state()
 
                 if event["type"] == "gameState":
                     self.set_time(event)
@@ -78,9 +79,9 @@ class Game(threading.Thread):
         print(f"Game {self.game_id} | Exited")
         self._is_running = False
 
-    def get_game_state(self):
-        """Update game state information"""
-        ongoing = self.client.games.get_ongoing(count=100)
+    def get_game_state(self, ongoing: list = None):
+        if ongoing is None:
+            ongoing = self.client.games.get_ongoing(count=10)
         for game in ongoing:
             if game["gameId"] == self.game_id:
                 self.game = game
@@ -93,23 +94,23 @@ class Game(threading.Thread):
                 return
         self.stop()  # Exit if none
 
+    def update_game_state(self):
+        self.is_my_turn = (self.color == "white") == (len(self.board.move_stack) % 2 == 0)
+
     def check_turn(self):
         """Check if currently our turn and make a move if it is"""
-        self.get_game_state()
+        self.update_game_state()
         if self.is_my_turn and not self._is_searching and not self.board.is_game_over():
             self._is_searching = True
-            print(f"Game {self.game_id} | {self.opponent['username']}", end=" ")
-            print(f"({self.op_color}) | {self.last_move}\n")
             self.calculate_limit()
             next_move = get_move(self.agent, self.board, self.limit, book=self.book)
             try:
                 client.bots.make_move(game_id=self.game_id, move=next_move)
+                self.board.push_uci(next_move)
             except:
                 self._is_searching = False
                 return
-            time.sleep(0.1)
-            self.get_game_state()
-            print(f"Game {self.game_id} | {self.name} ({self.color}) | {self.last_move}\n")
+            self.update_game_state()
             self._is_searching = False
 
     def handle_chat(self):
@@ -151,8 +152,6 @@ class Game(threading.Thread):
         inc *= 0.9
         rem_moves_50 = 50 - self.board.fullmove_number  # 50 move avg game length
         rem_moves_100 = 100 - self.board.fullmove_number  # 100 move long game length
-        print(f"{rem_time=}")
-        print(f"{inc=}")
         if rem_moves_50 > 0:
             limit = ((rem_time * 0.5) / rem_moves_50 + (rem_time * 0.9) / rem_moves_100) / 2 + inc
         elif rem_moves_100 > 0:
@@ -160,7 +159,6 @@ class Game(threading.Thread):
         else:
             limit = rem_time * 0.1 + inc
         limit = min(limit, rem_time)
-        print(f"{limit=}")
         self.limit = Limit(time=limit - 0.1)
 
 
@@ -170,7 +168,7 @@ def get_move(agent: MCTS, game_state: chess.Board, limit: Limit, book: bool = Tr
         with chess.polyglot.open_reader(os.environ["OPENING_BOOK_PATH"]) as reader:
             try:
                 move = reader.weighted_choice(game_state).move.uci()
-                time.sleep(1)  # Sleep to avoid API rate limit in fast openings
+                time.sleep(0.25)
                 return move
             except IndexError:
                 ...
@@ -182,7 +180,7 @@ games: list[Game] = []
 
 def auto_check():
     """Automatic timer to check game status preventing stuck games"""
-    ongoing = client.games.get_ongoing(count=100)
+    ongoing = client.games.get_ongoing(count=10)
 
     for game_info in ongoing:
         if game_info["gameId"] not in [game.game_id for game in games]:
@@ -193,14 +191,7 @@ def auto_check():
             time.sleep(0.1)
 
     for game in games:
-        if game.game_id not in [game_info["gameId"] for game_info in ongoing]:
-            game.stop()
-            time.sleep(0.1)
-            games.remove(game)
-
-    for game in games:
-        if not game._is_searching:
-            game.check_turn()
+        game.get_game_state(ongoing)
 
     t = threading.Timer(5, auto_check)
     t.start()
