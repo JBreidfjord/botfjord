@@ -1,0 +1,13 @@
+[package]
+name = "botfjord-rust"
+version = "0.1.0"
+authors = ["Jonathan Breidfjord <jbreidfjord@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chess = "3.2.0"
+ordered-float = "2.7.0"
+rand = "0.8.4"
+rand_distr = "0.4.1"
