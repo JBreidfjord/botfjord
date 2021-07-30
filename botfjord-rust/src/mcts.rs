@@ -1,4 +1,4 @@
-use chess::{Board, ChessMove, MoveGen};
+use chess::{Board, BoardStatus, ChessMove, MoveGen};
 use ordered_float::OrderedFloat;
 use rand::{prelude::*, thread_rng};
 use rand_distr::Dirichlet;
@@ -27,7 +27,6 @@ pub struct Limit {
 struct Node {
     state: Board,
     value: f32,
-    priors: HashMap<ChessMove, f32>,
     parent: Option<Rc<RefCell<Node>>>,
     last_move: Option<Rc<ChessMove>>,
     total_visit_count: f32,
@@ -87,7 +86,7 @@ impl Node {
         parent: Option<Rc<RefCell<Node>>>,
         last_move: Option<Rc<ChessMove>>,
     ) -> Node {
-        let mut children = HashMap::new();
+        let children = HashMap::new();
         let mut branches = HashMap::new();
         for action in MoveGen::new_legal(&state) {
             // Unwrap is not recommended but we don't want an error to pass silently
@@ -97,7 +96,6 @@ impl Node {
         Node {
             state,
             value,
-            priors,
             parent,
             last_move,
             total_visit_count: 1.0,
@@ -161,7 +159,7 @@ impl Node {
         if self.total_visit_count < minimum {
             return false;
         }
-        let mut branches: Vec<_> = self.branches.values().collect();
+        let branches: Vec<_> = self.branches.values().collect();
         let branch = branches
             .iter()
             .max_by_key(|b| OrderedFloat(b.visit_count))
@@ -171,7 +169,7 @@ impl Node {
 }
 
 impl Tree {
-    fn new(evaluator: Evaluator, temperature: f32, noise: f32) -> Tree {
+    pub fn new(evaluator: Evaluator, temperature: f32, noise: f32) -> Tree {
         Tree {
             evaluator,
             c: temperature,
@@ -186,19 +184,21 @@ impl Tree {
         action: Option<Rc<ChessMove>>,
         parent: Option<Rc<RefCell<Node>>>,
     ) -> Node {
-        let mut priors = self.evaluator.prior(state);
+        let mut priors = self.evaluator.priors(state);
         let value = self.evaluator.evaluate(state);
 
         // Add Dirichlet noise
         if self.noise != 0.0 {
-            let dirichlet =
-                Dirichlet::new_with_size(self.noise, MoveGen::new_legal(&state).len()).unwrap();
-            let samples = dirichlet.sample(&mut self.rng);
-            let mut new_priors: HashMap<ChessMove, f32> = HashMap::new();
-            for ((action, value), noise) in priors.iter().zip(samples) {
-                new_priors.insert(*action, (value * 0.5) + (noise * 0.5));
+            let move_count = MoveGen::new_legal(&state).len();
+            if move_count > 1 {
+                let dirichlet = Dirichlet::new_with_size(self.noise, move_count).unwrap();
+                let samples = dirichlet.sample(&mut self.rng);
+                let mut new_priors: HashMap<ChessMove, f32> = HashMap::new();
+                for ((action, value), noise) in priors.iter().zip(samples) {
+                    new_priors.insert(*action, (value * 0.5) + (noise * 0.5));
+                }
+                priors = new_priors;
             }
-            priors = new_priors;
         }
 
         Node::new(state, value, priors, parent, action)
@@ -214,14 +214,27 @@ impl Tree {
             q + self.c * p * (total_n.ln() / (n + 0.0000001)).sqrt()
         };
 
-        **node
+        // Sometimes panicking!
+        match node
             .moves()
             .iter()
             .max_by_key(|m| OrderedFloat(score_branch(m)))
-            .unwrap()
+        {
+            Some(m) => **m,
+            None => {
+                println!("Error: {:?}", node.moves());
+                return *node.moves()[0];
+            }
+        }
     }
 
-    fn search(&mut self, state: Board, limit: Option<Limit>) -> Vec<(ChessMove, f32)> {
+    pub fn search(&mut self, state: Board, limit: Option<Limit>) -> Vec<(ChessMove, f32)> {
+        // Return early if only 1 legal move available
+        if MoveGen::new_legal(&state).len() == 1 {
+            // This looks silly
+            return vec![(MoveGen::new_legal(&state).next().unwrap(), 1.0)];
+        }
+
         let limit = limit.unwrap_or(Limit::new(None, None));
         let mut i = 0.0;
         let start_time = Instant::now();
@@ -242,8 +255,10 @@ impl Tree {
                 Some(Rc::clone(&next_move)),
                 Some(Rc::clone(&node)),
             )));
-            node.borrow_mut()
-                .add_child(Rc::clone(&next_move), Rc::clone(&child_node));
+            if new_state.status() != BoardStatus::Ongoing {
+                node.borrow_mut()
+                    .add_child(Rc::clone(&next_move), Rc::clone(&child_node));
+            }
 
             let mut action = Rc::clone(&next_move);
             let mut value = -child_node.borrow().value;
@@ -261,7 +276,7 @@ impl Tree {
                 value = -value;
             }
 
-            if root.borrow().check_visit_ratio(0.5, 1000.0) {
+            if root.borrow().check_visit_ratio(0.5, 10000.0) {
                 break;
             }
 
