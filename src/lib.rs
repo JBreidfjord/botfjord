@@ -1,11 +1,12 @@
-#![feature(map_try_insert)]
+#![allow(unused_imports)]
 use crate::{
     eval::Evaluator,
     mcts::{Limit, Tree},
 };
 use chess::{ChessMove, Game};
 use ordered_float::OrderedFloat;
-use std::{env, str::FromStr, time::Instant};
+use pyo3::prelude::*;
+use std::str::FromStr;
 
 mod eval;
 mod mcts;
@@ -27,29 +28,23 @@ fn uci(action: &ChessMove) -> String {
     )
 }
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let fen = format!(
-        "{} {} {} {} {} {}",
-        &args[1], &args[2], &args[3], &args[4], &args[5], args[6]
-    );
-
-    let start = Instant::now();
-
+#[pyfunction]
+fn search_tree(fen: String) -> String {
     let game = Game::from_str(&fen).unwrap();
-    println!("{}", game.current_position());
 
     let evaluator = Evaluator::new();
     let mut tree = Tree::new(evaluator, 1.41, 0.3);
-    let limit = Limit::new(Some(30.0), Some(100_000.0));
+    let limit = Limit::new(Some(30.0), Some(250_000.0));
 
     let mut results = tree.search(game.current_position(), Some(limit));
     results.sort_by_key(|x| OrderedFloat(x.1));
-    results.reverse();
-    let mut fmt_results = vec![];
-    for (action, value) in results.iter().take(5) {
-        fmt_results.push((uci(action), value));
-    }
-    println!("{:?}", fmt_results);
-    println!("{}", start.elapsed().as_secs_f32());
+    let result = results.last().unwrap();
+    uci(&result.0)
+}
+
+#[pymodule]
+#[allow(unused_variables)]
+fn mcts_rust(py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(search_tree, m)?)?;
+    Ok(())
 }
