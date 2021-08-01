@@ -1,10 +1,16 @@
 [package]
-name = "botfjord-rust"
+name = "botfjord"
 version = "0.1.0"
 authors = ["Jonathan Breidfjord <jbreidfjord@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "mcts_rust"
+crate-type = ["cdylib"]
+
+[dependencies.pyo3]
+version = "0.14.1"
+features = ["extension-module"]
 
 [dependencies]
 chess = "3.2.0"
