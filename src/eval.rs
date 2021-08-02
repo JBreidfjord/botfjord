@@ -14,10 +14,10 @@ impl Evaluator {
     pub fn new() -> Evaluator {
         let mut pvm = HashMap::new();
         pvm.insert(Piece::Pawn, 1.0);
-        pvm.insert(Piece::Bishop, 3.0);
-        pvm.insert(Piece::Knight, 3.0);
-        pvm.insert(Piece::Rook, 5.0);
-        pvm.insert(Piece::Queen, 9.0);
+        pvm.insert(Piece::Bishop, 3.33);
+        pvm.insert(Piece::Knight, 3.05);
+        pvm.insert(Piece::Rook, 5.63);
+        pvm.insert(Piece::Queen, 9.5);
         Evaluator {
             piece_value_map: pvm,
             outer_ring: BitBoard::new(18411139144890810879).collect(),
@@ -52,23 +52,6 @@ impl Evaluator {
         value += (white & rooks).popcnt() as f32 * self.piece_value_map[&Piece::Rook];
         value += (white & queens).popcnt() as f32 * self.piece_value_map[&Piece::Queen];
 
-        // Value for center control
-        for action in MoveGen::new_legal(&state) {
-            if self.center.contains(&action.get_dest()) {
-                value += 0.25
-            }
-        }
-        // Flip board with null move to get opponent's center control
-        // Skipped if currently in check
-        if state.checkers().popcnt() == 0 {
-            let opp_state = state.null_move().unwrap();
-            for action in MoveGen::new_legal(&opp_state) {
-                if self.center.contains(&action.get_dest()) {
-                    value -= 0.25
-                }
-            }
-        }
-
         // Value for pushing king to outside in endgame
         if black.popcnt() <= 4 {
             let king = state.king_square(Color::Black);
@@ -99,8 +82,41 @@ impl Evaluator {
             value = -value
         }
 
-        // Value loss for each checker
-        if state.checkers().popcnt() > 0 {
+        // Remove value for pinned pieces
+        let pinned: Vec<_> = state.pinned().collect();
+        for square in pinned {
+            let piece = state.piece_on(square).unwrap();
+            if piece != Piece::King {
+                value -= self.piece_value_map[&piece]
+            }
+        }
+
+        // Value for center control
+        for action in MoveGen::new_legal(&state) {
+            if self.center.contains(&action.get_dest()) {
+                value += 0.25
+            }
+        }
+        // Flip board with null move to get opponent's info
+        // Skipped if currently in check
+        if state.checkers().popcnt() == 0 {
+            let opp_state = state.null_move().unwrap();
+            assert_ne!(state, opp_state);
+
+            for action in MoveGen::new_legal(&opp_state) {
+                if self.center.contains(&action.get_dest()) {
+                    value -= 0.25
+                }
+            }
+            let pinned: Vec<_> = state.pinned().collect();
+            for square in pinned {
+                let piece = state.piece_on(square).unwrap();
+                if piece != Piece::King {
+                    value += self.piece_value_map[&piece]
+                }
+            }
+        } else {
+            // Value loss for each checker
             value -= 0.75 * state.checkers().popcnt() as f32
         }
 
@@ -124,6 +140,7 @@ impl Evaluator {
 
         for action in MoveGen::new_legal(&state) {
             let new_state = state.make_move_new(action);
+            assert_ne!(new_state, state);
             priors.insert(action, score(new_state) + 0.0000001);
         }
 
