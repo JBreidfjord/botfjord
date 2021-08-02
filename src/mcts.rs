@@ -255,7 +255,7 @@ impl Tree {
                 Some(Rc::clone(&next_move)),
                 Some(Rc::clone(&node)),
             )));
-            if new_state.status() != BoardStatus::Ongoing {
+            if new_state.status() == BoardStatus::Ongoing {
                 node.borrow_mut()
                     .add_child(Rc::clone(&next_move), Rc::clone(&child_node));
             }
