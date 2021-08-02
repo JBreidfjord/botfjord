@@ -7,7 +7,7 @@ Instead of performing playouts at leaf nodes like a Pure MCTS algorithm would, i
 In addition to this value, it will also calculate a prior value for all possible child nodes of the current node.
 It uses these values in a modified [UCT formula](https://en.wikipedia.org/wiki/Monte_Carlo_tree_search#Exploration_and_exploitation):
 
-![equation](http://www.sciweavers.org/tex2img.php?eq=q%20%2B%20p%20%5Ctimes%20c%20%5Ctimes%20%5Csqrt%7B%5Cfrac%7Bln%28N%29%7D%7Bn%7D%7D%20&bc=White&fc=Black&im=png&fs=24&ff=arev&edit=0)
+![puct_equation](https://user-images.githubusercontent.com/16007069/127799736-73a37d37-b70e-4e87-8f8f-e77a4060bc52.png)
 
 Where:
 
