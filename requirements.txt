@@ -2,6 +2,7 @@ appdirs==1.4.4
 attrs==21.2.0
 berserk==0.10.0
 black==19.10b0
+botfjord==0.1.0
 certifi==2021.5.30
 charset-normalizer==2.0.3
 chess==1.6.1
