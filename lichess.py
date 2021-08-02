@@ -2,29 +2,22 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
+from timeit import default_timer as timer
 
 import berserk
 import chess
 import chess.polyglot
 from dotenv import load_dotenv
 
-from botfjord.eval import eval_fn, prior_fn
-from botfjord.mcts import MCTS, Limit, mp_search
-
-load_dotenv()
-
-processes = int(os.environ["SEARCH_PROCESSES"])
-
-session = berserk.TokenSession(os.environ["LICHESS_TOKEN"])
-client = berserk.Client(session)
+from botfjord import mcts_rust
+from botfjord.types import Limit
 
 
 class Game(threading.Thread):
-    def __init__(
-        self, client: berserk.Client, game_id: str, **kwargs,
-    ):
+    def __init__(self, client: berserk.Client, game_id: str):
         self._is_running = True
-        super().__init__(**kwargs)
+        super().__init__()
 
         self.game_id = game_id
         self.client = client
@@ -33,14 +26,12 @@ class Game(threading.Thread):
         self.board = None
         self.get_game_state()
 
-        self.agent = MCTS(eval_fn, prior_fn, temperature=10, noise=0.3)
-        self.limit = Limit(time=3)
-        self.book = True
-
         self._is_searching = False
+        self._opp_timer = timer()
+        self.limit = Limit(time=1)
 
         self.name = client.account.get()["id"]
-        self.chat_active = True
+        self._chat_active = True
         self.white = self.name if self.color == "white" else self.opponent["username"]
         self.black = self.name if self.color == "black" else self.opponent["username"]
         print(f"Game {self.game_id} | Initialized | {self.white} v {self.black}")
@@ -103,22 +94,23 @@ class Game(threading.Thread):
         if self.is_my_turn and not self._is_searching and not self.board.is_game_over():
             self._is_searching = True
             self.calculate_limit()
-            next_move = get_move(self.agent, self.board, self.limit, book=self.book)
+            next_move = get_move(self.board, self.limit)
             try:
                 client.bots.make_move(game_id=self.game_id, move=next_move)
                 self.board.push_uci(next_move)
+                self._opp_timer = timer()
             except:
                 self._is_searching = False
                 return
             self.update_game_state()
             self._is_searching = False
 
-    def handle_chat(self):
-        if self.chat_active:
+    def handle_chat_line(self):
+        if self._chat_active:
             client.bots.post_message(
                 game_id=self.game_id, text="Sorry, I'm not set up for chat yet!"
             )
-            self.chat_active = False
+            self._chat_active = False
         self.get_game_state()
 
     def set_time(self, event):
@@ -146,36 +138,47 @@ class Game(threading.Thread):
 
     def calculate_limit(self):
         """Calculate and set time limit based on remaining time and increment"""
+        opp_time = timer() - self._opp_timer
         rem_time = self.wtime if self.color == "white" else self.btime
         rem_time -= self.limit.time  # Account for search time by subtracting previous time
+
         inc = self.winc if self.color == "white" else self.binc
         inc *= 0.9
+
         rem_moves_50 = 50 - self.board.fullmove_number  # 50 move avg game length
         rem_moves_100 = 100 - self.board.fullmove_number  # 100 move long game length
         if rem_moves_50 > 0:
-            limit = ((rem_time * 0.5) / rem_moves_50 + (rem_time * 0.9) / rem_moves_100) / 2 + inc
+            limit = (((rem_time * 0.5) / rem_moves_50) * 0.75) + (
+                (rem_time * 0.9) / rem_moves_100
+            ) * 0.25
+            if rem_moves_50 < 10:
+                limit = min(limit / ((50 - rem_moves_50) / 50 * 2), limit)
         elif rem_moves_100 > 0:
-            limit = (rem_time * 0.5) / rem_moves_100 + inc
+            limit = (rem_time * 0.5) / rem_moves_100
+            limit = min(limit / ((100 - rem_moves_100) / 100 * 2), limit)
         else:
-            limit = rem_time * 0.1 + inc
-        limit = min(limit, rem_time)
-        self.limit = Limit(time=limit - 0.1)
+            limit = rem_time * 0.1
+
+        limit += inc
+        # Average with opponent's last time to avoid long turns against human players
+        avg_limit = (limit + opp_time) / 2
+        limit = min(limit, rem_time, avg_limit, 10)
+        limit = max(limit - 0.4, 0.01)
+        self.limit = Limit(time=limit)
 
 
-def get_move(agent: MCTS, game_state: chess.Board, limit: Limit, book: bool = True) -> str:
-    """Gets move from opening book if book has position, starting a search if not"""
-    if book:
+def get_move(game_state: chess.Board, limit: Limit) -> str:
+    """Handles getting move from search or opening book"""
+    if _book:
         with chess.polyglot.open_reader(os.environ["OPENING_BOOK_PATH"]) as reader:
             try:
                 move = reader.weighted_choice(game_state).move.uci()
-                time.sleep(0.25)
+                time.sleep(0.1)
                 return move
             except IndexError:
                 ...
-    return mp_search(agent, game_state, limit, processes=processes).uci()
 
-
-games: list[Game] = []
+    return mcts_rust.search_tree(game_state.fen(), limit.time, temperature, processes)
 
 
 def auto_check():
@@ -198,13 +201,18 @@ def auto_check():
 
 
 def should_accept(event):
+    """Returns bool for if game should be accepted based on configured parameters"""
     if (
         (
             event["challenger"]["id"].lower() in json.loads(os.environ["ACCEPT_PLAYERS"])
             or os.environ["ACCEPT_PLAYERS"] == "ANY"
         )
-        and event["speed"] in json.loads(os.environ["ACCEPT_TIMECONTROL"])
+        and (
+            event["speed"] in json.loads(os.environ["ACCEPT_TIMECONTROL"])
+            or os.environ["ACCEPT_TIMECONTROL"] == "ANY"
+        )
         and event["variant"]["key"] in ["standard", "fromPosition"]
+        and len(games) <= max_games
     ):
         return True
     else:
@@ -212,6 +220,23 @@ def should_accept(event):
 
 
 if __name__ == "__main__":
+    load_dotenv()
+
+    processes = int(os.environ["SEARCH_PROCESSES"])
+    temperature = float(os.environ["SEARCH_TEMPERATURE"])
+    accept_players = json.loads(os.environ["ACCEPT_PLAYERS"])
+    max_games = int(os.environ["MAX_GAMES"])
+
+    _book = True
+    if not Path(os.environ["OPENING_BOOK_PATH"]).exists():
+        print("Invalid opening book path | Opening book disabled")
+        _book = False
+
+    session = berserk.TokenSession(os.environ["LICHESS_TOKEN"])
+    client = berserk.Client(session)
+
+    games: list[Game] = []
+
     for event in client.bots.stream_incoming_events():
         if event["type"] == "challenge":
             if should_accept(event["challenge"]):
