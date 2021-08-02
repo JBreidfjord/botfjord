@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Formatter, Result},
     option::Option,
-    rc::Rc,
+    rc::{Rc, Weak},
     time::Instant,
 };
 
@@ -27,7 +27,7 @@ pub struct Limit {
 struct Node {
     state: Board,
     value: f32,
-    parent: Option<Rc<RefCell<Node>>>,
+    parent: Option<Weak<RefCell<Node>>>,
     last_move: Option<Rc<ChessMove>>,
     total_visit_count: f32,
     branches: HashMap<ChessMove, Branch>,
@@ -83,7 +83,7 @@ impl Node {
         state: Board,
         value: f32,
         priors: HashMap<ChessMove, f32>,
-        parent: Option<Rc<RefCell<Node>>>,
+        parent: Option<Weak<RefCell<Node>>>,
         last_move: Option<Rc<ChessMove>>,
     ) -> Node {
         let children = HashMap::new();
@@ -182,7 +182,7 @@ impl Tree {
         &mut self,
         state: Board,
         action: Option<Rc<ChessMove>>,
-        parent: Option<Rc<RefCell<Node>>>,
+        parent: Option<Weak<RefCell<Node>>>,
     ) -> Node {
         let mut priors = self.evaluator.priors(state);
         let value = self.evaluator.evaluate(state);
@@ -228,14 +228,13 @@ impl Tree {
         }
     }
 
-    pub fn search(&mut self, state: Board, limit: Option<Limit>) -> Vec<(ChessMove, f32)> {
+    pub fn search(&mut self, state: Board, limit: Limit) -> Vec<(ChessMove, f32)> {
         // Return early if only 1 legal move available
         if MoveGen::new_legal(&state).len() == 1 {
             // This looks silly
             return vec![(MoveGen::new_legal(&state).next().unwrap(), 1.0)];
         }
 
-        let limit = limit.unwrap_or(Limit::new(None, None));
         let mut i = 0.0;
         let start_time = Instant::now();
         let root = Rc::new(RefCell::new(self.create_node(state, None, None)));
@@ -253,7 +252,7 @@ impl Tree {
             let child_node = Rc::new(RefCell::new(self.create_node(
                 new_state,
                 Some(Rc::clone(&next_move)),
-                Some(Rc::clone(&node)),
+                Some(Rc::downgrade(&node)),
             )));
             if new_state.status() == BoardStatus::Ongoing {
                 node.borrow_mut()
@@ -268,15 +267,13 @@ impl Tree {
                     Some(m) => m,
                     None => break,
                 });
-                let new_node = Rc::clone(match node.borrow().parent.as_ref() {
-                    Some(n) => n,
-                    None => break,
-                });
+                let new_node =
+                    Rc::clone(&node.borrow().parent.as_ref().unwrap().upgrade().unwrap());
                 node = new_node;
                 value = -value;
             }
 
-            if root.borrow().check_visit_ratio(0.5, 10000.0) {
+            if root.borrow().check_visit_ratio(0.90, 50000.0) {
                 break;
             }
 
