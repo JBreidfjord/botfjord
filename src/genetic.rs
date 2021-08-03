@@ -1,12 +1,16 @@
-use chess::{Color, Game, GameResult, ALL_COLORS, ALL_PIECES, ALL_SQUARES};
+use chess::{Board, Color, Game, GameResult, ALL_COLORS, ALL_PIECES, ALL_SQUARES};
 use rand::{
     distributions::{Distribution, Uniform},
     seq::SliceRandom,
     Rng,
 };
-use std::{collections::HashMap, fs::write, sync::Arc};
+use std::{collections::HashMap, fs::write, str::FromStr, sync::Arc};
 
-use crate::{eval::Evaluator, mcts::start_search};
+use crate::{
+    eval::Evaluator,
+    helpers::{uci, TEST_POSITIONS},
+    mcts::start_search,
+};
 
 fn generate_initial_population(population_size: usize) -> Vec<Arc<Evaluator>> {
     let mut rng = rand::thread_rng();
@@ -195,6 +199,17 @@ fn generate_new_population(
 }
 
 fn population_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<usize> {
+    let mut fitness = vec![];
+    for individual in population {
+        let individual_fitness = run_fitness_test(Arc::clone(individual));
+        fitness.push(individual_fitness);
+    }
+
+    println!("{:?}", fitness);
+    fitness
+}
+
+fn tournament_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<usize> {
     let mut fitness = vec![0; population.len()];
     for (i, individual) in population.iter().enumerate() {
         for (j, competitor) in population.iter().enumerate() {
@@ -284,15 +299,51 @@ pub fn run_ga(
     n_generations: usize,
 ) -> Vec<Arc<Evaluator>> {
     let mut population = generate_initial_population(population_size);
-    for _ in 0..n_generations {
+    for i in 0..n_generations {
+        println!("Generation {}:", i);
         population = generate_new_population(
             Arc::new(population),
             survival_rate,
             mutation_rate,
             n_mutations,
         );
+        write(
+            format!("genes/genetic_evaluator_{}", i),
+            format!("{:?}", population.to_vec()),
+        )
+        .expect("Failed to write");
     }
 
     write("genetic_evaluator", format!("{:?}", population.to_vec())).expect("Failed to write");
     population.to_vec()
+}
+
+fn run_fitness_test(individual: Arc<Evaluator>) -> usize {
+    let mut fitness = 0;
+    for (i, (fen, bm)) in TEST_POSITIONS.iter().enumerate() {
+        let action = start_search(
+            Board::from_str(fen).unwrap(),
+            Arc::clone(&individual),
+            1.0,
+            10.0,
+            32,
+        )
+        .iter()
+        .max_by_key(|x| x.1)
+        .unwrap()
+        .0;
+
+        if uci(&action) == **bm {
+            fitness += 1;
+        }
+        println!(
+            "Best move: {} | Chosen move: {} | Total score: {} / {}",
+            bm,
+            uci(&action),
+            fitness,
+            i + 1
+        );
+    }
+
+    fitness
 }
