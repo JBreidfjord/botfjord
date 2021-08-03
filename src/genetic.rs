@@ -1,9 +1,11 @@
 use chess::{Board, Color, Game, GameResult, ALL_COLORS, ALL_PIECES, ALL_SQUARES};
+use ordered_float::OrderedFloat;
 use rand::{
     distributions::{Distribution, Uniform},
     seq::SliceRandom,
     Rng,
 };
+use random_choice::random_choice;
 use std::{collections::HashMap, fs::write, str::FromStr, sync::Arc};
 
 use crate::{
@@ -155,20 +157,21 @@ fn generate_new_population(
 ) -> Vec<Arc<Evaluator>> {
     let population_size = current_population.len();
     let fitness = population_fitness(&current_population);
-    let mut pop_and_fit: Vec<(Arc<Evaluator>, usize)> = current_population
+    let mut pop_and_fit: Vec<(Arc<Evaluator>, &f32)> = current_population
         .to_vec()
         .into_iter()
-        .zip(fitness)
+        .zip(&fitness)
         .collect();
-    pop_and_fit.sort_by_key(|x| x.1);
+    pop_and_fit.sort_by_key(|x| OrderedFloat(*x.1));
     pop_and_fit.reverse();
 
     let number_of_children =
         (population_size as f32 - (population_size as f32 * survival_rate)) as usize;
-    let reproducers: Vec<_> = pop_and_fit.iter().take(number_of_children).collect();
+    let reproducers: Vec<_> =
+        random_choice().random_choice_f32(&current_population, &fitness, number_of_children);
     let mut group_a = vec![];
     let mut group_b = vec![];
-    for (i, (reproducer, _)) in reproducers.iter().enumerate() {
+    for (i, reproducer) in reproducers.iter().enumerate() {
         if i < number_of_children / 2 {
             group_a.push(reproducer);
         } else {
@@ -198,7 +201,7 @@ fn generate_new_population(
     children
 }
 
-fn population_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<usize> {
+fn population_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<f32> {
     let mut fitness = vec![];
     for individual in population {
         let individual_fitness = run_fitness_test(Arc::clone(individual));
@@ -318,13 +321,13 @@ pub fn run_ga(
     population.to_vec()
 }
 
-fn run_fitness_test(individual: Arc<Evaluator>) -> usize {
+fn run_fitness_test(individual: Arc<Evaluator>) -> f32 {
     let mut fitness = 0;
     for (i, (fen, bm)) in TEST_POSITIONS.iter().enumerate() {
         let action = start_search(
             Board::from_str(fen).unwrap(),
             Arc::clone(&individual),
-            1.0,
+            0.5,
             10.0,
             32,
         )
@@ -345,5 +348,5 @@ fn run_fitness_test(individual: Arc<Evaluator>) -> usize {
         );
     }
 
-    fitness
+    fitness as f32
 }
