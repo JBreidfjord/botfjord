@@ -1,20 +1,11 @@
-#![allow(unused_imports)]
-use crate::{
-    eval::Evaluator,
-    mcts::{Limit, Tree},
-};
-use chess::{Board, ChessMove, MoveGen};
-use ordered_float::OrderedFloat;
+use chess::{Board, ChessMove};
 use pyo3::prelude::*;
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{mpsc, Arc, Mutex},
-    thread,
-    time::Instant,
-};
+use std::{str::FromStr, sync::Arc, time::Instant};
+
+use crate::{eval::Evaluator, genetic::run_ga, mcts::start_search};
 
 mod eval;
+mod genetic;
 mod mcts;
 
 fn uci(action: &ChessMove) -> String {
@@ -38,61 +29,17 @@ fn uci(action: &ChessMove) -> String {
 fn search_tree(fen: String, time: f32, temperature: f32, processes: usize) -> String {
     let start = Instant::now();
 
-    let mut handles = vec![];
-    let mut move_dict = HashMap::new();
+    let board = Board::from_str(&fen).unwrap();
+    let evaluator = Evaluator::new();
 
-    for action in MoveGen::new_legal(&Board::from_str(&fen).unwrap()) {
-        move_dict.insert(action, 0);
-    }
-
-    let fen_mtx = Arc::new(Mutex::new(fen));
-    let time_mtx = Arc::new(Mutex::new(time));
-    let temperature_mtx = Arc::new(Mutex::new(temperature));
-
-    let (tx, rx) = mpsc::channel();
-    let tx_mtx = Arc::new(Mutex::new(tx));
-
-    for _ in 0..processes {
-        let t_fen = Arc::clone(&fen_mtx);
-        let t_time = Arc::clone(&time_mtx);
-        let t_temperature = Arc::clone(&temperature_mtx);
-        let t_tx = Arc::clone(&tx_mtx);
-
-        let handle = thread::spawn(move || {
-            let board = Board::from_str(&t_fen.lock().unwrap()).unwrap();
-
-            let evaluator = Evaluator::new();
-            let mut tree = Tree::new(evaluator, *t_temperature.lock().unwrap(), 0.3);
-            let limit = Limit::new(Some(*t_time.lock().unwrap()), Some(0.0));
-
-            let results = tree.search(board, limit);
-            for result in results {
-                t_tx.lock().unwrap().send(result).unwrap();
-            }
-        });
-        handles.push(handle);
-    }
-
-    drop(tx_mtx);
-    for (action, visits) in rx {
-        *move_dict.get_mut(&action).unwrap() += visits as usize;
-    }
-
-    let mut results = vec![];
-    for item in move_dict.iter() {
-        results.push(item);
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
+    let mut results = start_search(board, Arc::new(evaluator), time, temperature, processes);
 
     results.sort_by_key(|x| x.1);
     results.reverse();
     let mut fmt_results = vec![];
     let mut nodes = 0;
     for (i, (action, value)) in results.iter().enumerate() {
-        nodes += **value;
+        nodes += value;
         if i < 5 {
             fmt_results.push(format!("{} {:.0}", uci(action), value));
         }
@@ -109,9 +56,27 @@ fn search_tree(fen: String, time: f32, temperature: f32, processes: usize) -> St
     uci(&results[0].0)
 }
 
+#[pyfunction]
+fn get_genetic_evaluators(
+    population_size: usize,
+    survival_rate: f32,
+    mutation_rate: f32,
+    n_mutations: usize,
+    n_generations: usize,
+) {
+    run_ga(
+        population_size,
+        survival_rate,
+        mutation_rate,
+        n_mutations,
+        n_generations,
+    );
+}
+
 #[pymodule]
 #[allow(unused_variables)]
 fn mcts_rust(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_tree, m)?)?;
+    m.add_function(wrap_pyfunction!(get_genetic_evaluators, m)?)?;
     Ok(())
 }

@@ -8,6 +8,8 @@ use std::{
     fmt::{Debug, Formatter, Result},
     option::Option,
     rc::{Rc, Weak},
+    sync::{mpsc, Arc, Mutex},
+    thread,
     time::Instant,
 };
 
@@ -35,7 +37,7 @@ struct Node {
 }
 
 pub struct Tree {
-    evaluator: Evaluator,
+    evaluator: Arc<Evaluator>,
     c: f32,
     noise: f32,
     rng: ThreadRng,
@@ -89,8 +91,7 @@ impl Node {
         let children = HashMap::new();
         let mut branches = HashMap::new();
         for action in MoveGen::new_legal(&state) {
-            // Unwrap is not recommended but we don't want an error to pass silently
-            let prior = priors.get(&action).unwrap();
+            let prior = priors.get(&action).unwrap_or(&0.0);
             branches.insert(action, Branch::new(*prior));
         }
         Node {
@@ -169,7 +170,7 @@ impl Node {
 }
 
 impl Tree {
-    pub fn new(evaluator: Evaluator, temperature: f32, noise: f32) -> Tree {
+    pub fn new(evaluator: Arc<Evaluator>, temperature: f32, noise: f32) -> Tree {
         Tree {
             evaluator,
             c: temperature,
@@ -184,20 +185,19 @@ impl Tree {
         action: Option<Rc<ChessMove>>,
         parent: Option<Weak<RefCell<Node>>>,
     ) -> Node {
-        let mut priors = self.evaluator.priors(state);
         let value = self.evaluator.evaluate(state);
 
+        let mut priors = HashMap::new();
         // Add Dirichlet noise
         if self.noise != 0.0 {
-            let move_count = MoveGen::new_legal(&state).len();
+            let mut actions = MoveGen::new_legal(&state);
+            let move_count = actions.len();
             if move_count > 1 {
                 let dirichlet = Dirichlet::new_with_size(self.noise, move_count).unwrap();
                 let samples = dirichlet.sample(&mut self.rng);
-                let mut new_priors: HashMap<ChessMove, f32> = HashMap::new();
-                for ((action, value), noise) in priors.iter().zip(samples) {
-                    new_priors.insert(*action, (value * 0.5) + (noise * 0.5));
+                for i in 0..move_count {
+                    priors.insert(actions.next().unwrap(), samples[i]);
                 }
-                priors = new_priors;
             }
         }
 
@@ -211,10 +211,9 @@ impl Tree {
             let q = node.expected_value(action);
             let p = node.prior(action);
             let n = node.visit_count(action);
-            q + self.c * p * (total_n.ln() / (n + 0.0000001)).sqrt()
+            q + self.c * p * (total_n.ln() / (n + 0.0000000001)).sqrt()
         };
 
-        // Sometimes panicking!
         match node
             .moves()
             .iter()
@@ -228,7 +227,7 @@ impl Tree {
         }
     }
 
-    pub fn search(&mut self, state: Board, limit: Limit) -> Vec<(ChessMove, f32)> {
+    fn search(&mut self, state: Board, limit: Limit) -> Vec<(ChessMove, f32)> {
         // Return early if only 1 legal move available
         if MoveGen::new_legal(&state).len() == 1 {
             // This looks silly
@@ -297,4 +296,61 @@ impl Tree {
         }
         results
     }
+}
+
+pub fn start_search(
+    board: Board,
+    evaluator: Arc<Evaluator>,
+    time: f32,
+    temperature: f32,
+    processes: usize,
+) -> Vec<(ChessMove, usize)> {
+    let mut handles = vec![];
+    let mut move_dict = HashMap::new();
+
+    for action in MoveGen::new_legal(&board) {
+        move_dict.insert(action, 0);
+    }
+
+    let time_mtx = Arc::new(Mutex::new(time));
+    let temperature_mtx = Arc::new(Mutex::new(temperature));
+
+    let (tx, rx) = mpsc::channel();
+    let tx_mtx = Arc::new(Mutex::new(tx));
+
+    for _ in 0..processes {
+        let t_evaluator = Arc::clone(&evaluator);
+        let t_time = Arc::clone(&time_mtx);
+        let t_temperature = Arc::clone(&temperature_mtx);
+        let t_tx = Arc::clone(&tx_mtx);
+
+        let t_board = board.clone();
+
+        let handle = thread::spawn(move || {
+            let mut tree = Tree::new(t_evaluator, *t_temperature.lock().unwrap(), 0.3);
+            let limit = Limit::new(Some(*t_time.lock().unwrap()), Some(0.0));
+
+            let results = tree.search(t_board, limit);
+            for result in results {
+                t_tx.lock().unwrap().send(result).unwrap();
+            }
+        });
+        handles.push(handle);
+    }
+
+    drop(tx_mtx);
+    for (action, visits) in rx {
+        *move_dict.get_mut(&action).unwrap() += visits as usize;
+    }
+
+    let mut results = vec![];
+    for (action, visits) in move_dict.iter() {
+        results.push((*action, *visits));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    results
 }
