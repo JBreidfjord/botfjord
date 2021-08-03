@@ -105,7 +105,7 @@ class Game(threading.Thread):
             self.update_game_state()
             self._is_searching = False
 
-    def handle_chat_line(self):
+    def handle_chat(self):
         if self._chat_active:
             client.bots.post_message(
                 game_id=self.game_id, text="Sorry, I'm not set up for chat yet!"
@@ -149,8 +149,8 @@ class Game(threading.Thread):
         rem_moves_100 = 100 - self.board.fullmove_number  # 100 move long game length
         if rem_moves_50 > 0:
             limit = (((rem_time * 0.5) / rem_moves_50) * 0.75) + (
-                (rem_time * 0.9) / rem_moves_100
-            ) * 0.25
+                ((rem_time * 0.9) / rem_moves_100) * 0.25
+            )
             if rem_moves_50 < 10:
                 limit = min(limit / ((50 - rem_moves_50) / 50 * 2), limit)
         elif rem_moves_100 > 0:
@@ -203,14 +203,8 @@ def auto_check():
 def should_accept(event):
     """Returns bool for if game should be accepted based on configured parameters"""
     if (
-        (
-            event["challenger"]["id"].lower() in json.loads(os.environ["ACCEPT_PLAYERS"])
-            or os.environ["ACCEPT_PLAYERS"] == "ANY"
-        )
-        and (
-            event["speed"] in json.loads(os.environ["ACCEPT_TIMECONTROL"])
-            or os.environ["ACCEPT_TIMECONTROL"] == "ANY"
-        )
+        (event["challenger"]["id"].lower() in accept_players or accept_players == [])
+        and (event["speed"] in accept_timecontrol or accept_timecontrol == [])
         and event["variant"]["key"] in ["standard", "fromPosition"]
         and len(games) <= max_games
     ):
@@ -225,6 +219,7 @@ if __name__ == "__main__":
     processes = int(os.environ["SEARCH_PROCESSES"])
     temperature = float(os.environ["SEARCH_TEMPERATURE"])
     accept_players = json.loads(os.environ["ACCEPT_PLAYERS"])
+    accept_timecontrol = json.loads(os.environ["ACCEPT_TIMECONTROL"])
     max_games = int(os.environ["MAX_GAMES"])
 
     _book = True
