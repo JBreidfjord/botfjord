@@ -6,7 +6,7 @@ use rand::{
     Rng,
 };
 use random_choice::random_choice;
-use std::{collections::HashMap, fs::write, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use crate::{
     eval::Evaluator,
@@ -16,7 +16,7 @@ use crate::{
 
 fn generate_initial_population(population_size: usize) -> Vec<Arc<Evaluator>> {
     let mut rng = rand::thread_rng();
-    let dist: Uniform<isize> = Uniform::new_inclusive(-100, 100);
+    let dist: Uniform<isize> = Uniform::new_inclusive(0, 100);
 
     let mut population = vec![];
     for _ in 0..population_size {
@@ -46,6 +46,24 @@ fn generate_initial_population(population_size: usize) -> Vec<Arc<Evaluator>> {
     population
 }
 
+fn load_previous_population(
+    population_size: usize,
+    mutation_rate: f32,
+    n_mutations: usize,
+) -> Vec<Arc<Evaluator>> {
+    let mut population = vec![];
+    for _ in 0..population_size {
+        let evaluator = boundary_mutation(
+            &Evaluator::read("genes/best_fitness_4"),
+            // &Evaluator::new(),
+            mutation_rate,
+            n_mutations,
+        );
+        population.push(Arc::new(evaluator));
+    }
+    population
+}
+
 fn boundary_mutation(individual: &Evaluator, mutation_rate: f32, n_mutations: usize) -> Evaluator {
     let mut rng = rand::thread_rng();
     let dist = Uniform::new_inclusive(0.0, 1.0);
@@ -60,11 +78,7 @@ fn boundary_mutation(individual: &Evaluator, mutation_rate: f32, n_mutations: us
                     .get_mut(ALL_PIECES.choose(&mut rng).unwrap())
                     .unwrap()
                     .get_mut(ALL_SQUARES.choose(&mut rng).unwrap())
-                    .unwrap() = if dist.sample(&mut rng) >= 0.5 {
-                    100
-                } else {
-                    -100
-                }
+                    .unwrap() = if dist.sample(&mut rng) >= 0.5 { 100 } else { 0 }
             } else {
                 *mutated_child
                     .end_maps
@@ -73,11 +87,7 @@ fn boundary_mutation(individual: &Evaluator, mutation_rate: f32, n_mutations: us
                     .get_mut(ALL_PIECES.choose(&mut rng).unwrap())
                     .unwrap()
                     .get_mut(ALL_SQUARES.choose(&mut rng).unwrap())
-                    .unwrap() = if dist.sample(&mut rng) >= 0.5 {
-                    100
-                } else {
-                    -100
-                }
+                    .unwrap() = if dist.sample(&mut rng) >= 0.5 { 100 } else { 0 }
             }
         }
     }
@@ -202,29 +212,16 @@ fn generate_new_population(
 }
 
 fn population_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<f32> {
+    let mut best_fitness = 0.0;
     let mut fitness = vec![];
     for individual in population {
-        let individual_fitness = run_fitness_test(Arc::clone(individual));
+        // let individual_fitness = run_fitness_test(Arc::clone(individual));
+        let individual_fitness = run_tournament_fitness(Arc::clone(individual));
         fitness.push(individual_fitness);
-    }
-
-    println!("{:?}", fitness);
-    fitness
-}
-
-fn tournament_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<usize> {
-    let mut fitness = vec![0; population.len()];
-    for (i, individual) in population.iter().enumerate() {
-        for (j, competitor) in population.iter().enumerate() {
-            if i == j {
-                continue;
-            } else {
-                let result = simulate_game(Arc::clone(individual), Arc::clone(competitor));
-                fitness[i] += result;
-                if result == 1 {
-                    fitness[j] += result;
-                }
-            }
+        if individual_fitness > best_fitness {
+            individual.write("genes/best_fitness");
+            individual.write(&format!("genes/best_fitness_{}", individual_fitness));
+            best_fitness = individual_fitness;
         }
     }
 
@@ -301,7 +298,8 @@ pub fn run_ga(
     n_mutations: usize,
     n_generations: usize,
 ) -> Vec<Arc<Evaluator>> {
-    let mut population = generate_initial_population(population_size);
+    // let mut population = generate_initial_population(population_size);
+    let mut population = load_previous_population(population_size, mutation_rate, n_mutations);
     for i in 0..n_generations {
         println!("Generation {}:", i);
         population = generate_new_population(
@@ -310,14 +308,8 @@ pub fn run_ga(
             mutation_rate,
             n_mutations,
         );
-        write(
-            format!("genes/genetic_evaluator_{}", i),
-            format!("{:?}", population.to_vec()),
-        )
-        .expect("Failed to write");
     }
 
-    write("genetic_evaluator", format!("{:?}", population.to_vec())).expect("Failed to write");
     population.to_vec()
 }
 
@@ -350,3 +342,28 @@ fn run_fitness_test(individual: Arc<Evaluator>) -> f32 {
 
     fitness as f32
 }
+
+fn run_tournament_fitness(individual: Arc<Evaluator>) -> f32 {
+    let mut fitness = 0;
+    let competitor = Arc::new(Evaluator::new());
+    for i in 1..=5 {
+        fitness += simulate_game(Arc::clone(&individual), Arc::clone(&competitor));
+        println!("Fitness: {} / {}", fitness, i * 2);
+    }
+
+    fitness as f32
+}
+
+// fn tournament_fitness(population: &Vec<Arc<Evaluator>>) -> Vec<usize> {
+//     let mut fitness = vec![0; population.len()];
+//     let competitor = Arc::new(Evaluator::new());
+//     for (i, individual) in population.iter().enumerate() {
+//         for _ in 0..5 {
+//             let result = simulate_game(Arc::clone(individual), Arc::clone(&competitor));
+//             fitness[i] += result;
+//         }
+//     }
+
+//     println!("{:?}", fitness);
+//     fitness
+// }

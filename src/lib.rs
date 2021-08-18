@@ -14,7 +14,7 @@ fn search_tree(fen: String, time: f32, temperature: f32, processes: usize) -> St
     let start = Instant::now();
 
     let board = Board::from_str(&fen).unwrap();
-    let evaluator = Evaluator::new();
+    let evaluator = Evaluator::read("genes/default");
 
     let mut results = start_search(board, Arc::new(evaluator), time, temperature, processes);
 

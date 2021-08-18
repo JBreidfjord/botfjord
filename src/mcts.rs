@@ -197,6 +197,7 @@ impl Tree {
                 let samples = dirichlet.sample(&mut self.rng);
                 for i in 0..move_count {
                     priors.insert(actions.next().unwrap(), samples[i]);
+                    // priors.insert(actions.next().unwrap(), 0.0);
                 }
             }
         }
@@ -230,7 +231,6 @@ impl Tree {
     fn search(&mut self, state: Board, limit: Limit) -> Vec<(ChessMove, f32)> {
         // Return early if only 1 legal move available
         if MoveGen::new_legal(&state).len() == 1 {
-            // This looks silly
             return vec![(MoveGen::new_legal(&state).next().unwrap(), 1.0)];
         }
 

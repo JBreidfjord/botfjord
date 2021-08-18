@@ -20,7 +20,7 @@ pub fn uci(action: &ChessMove) -> String {
 pub const TEST_POSITIONS: [(&str, &str); 34] = [
     (
         "r3kb1r/3n1pp1/p6p/2pPp2q/Pp2N3/3B2PP/1PQ2P2/R3K2R w KQkq -",
-        "b5b6",
+        "d5d6",
     ),
     (
         "1k1r3r/pp2qpp1/3b1n1p/3pNQ2/2pP1P2/2N1P3/PP4PP/1K1RR3 b - -",
