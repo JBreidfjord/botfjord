@@ -2,6 +2,14 @@ use chess::{BitBoard, Board, BoardStatus, ChessMove, Color, MoveGen, Piece, Squa
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
+const PAWN_PHASE: usize = 0;
+const KNIGHT_PHASE: usize = 1;
+const BISHOP_PHASE: usize = 1;
+const ROOK_PHASE: usize = 2;
+const QUEEN_PHASE: usize = 4;
+const TOTAL_PHASE: usize =
+    PAWN_PHASE * 16 + KNIGHT_PHASE * 4 + BISHOP_PHASE * 4 + ROOK_PHASE * 4 + QUEEN_PHASE * 2;
+
 pub struct Evaluator {
     piece_value_map: HashMap<Piece, f32>,
     eg_piece_value_map: HashMap<Piece, f32>,
@@ -33,29 +41,6 @@ impl Evaluator {
         eg_pvm.insert(Piece::King, 0.0);
 
         let (pst, eg_pst) = create_pst();
-        // for piece in chess::ALL_PIECES {
-        //     if piece == Piece::Pawn {
-        //         for square in chess::ALL_SQUARES {
-        //             if square.get_rank() == chess::Rank::Fourth
-        //                 || square.get_rank() == chess::Rank::Fifth
-        //             {
-        //                 pst.insert((piece, square), 20.0); // 20 Pawns for being center ranks
-        //             } else {
-        //                 pst.insert((piece, square), 0.0);
-        //             }
-        //         }
-        //     } else {
-        //         for square in chess::ALL_SQUARES {
-        //             pst.insert((piece, square), 0.0);
-        //         }
-        //     }
-        // }
-
-        // for piece in chess::ALL_PIECES {
-        //     for square in chess::ALL_SQUARES {
-        //         pst.insert((piece, square), 0.0);
-        //     }
-        // }
 
         Evaluator {
             piece_value_map: pvm,
@@ -75,14 +60,14 @@ impl Evaluator {
         }
 
         // Use material count to determine game phase
-        let taper = match state.combined().popcnt() {
-            1..=6 => 1.0,
-            7..=12 => 0.75,
-            13..=22 => 0.5,
-            23..=28 => 0.25,
-            29..=32 => 0.0,
-            _ => 0.5,
-        };
+        let mut phase = TOTAL_PHASE;
+        // phase -= state.pieces(Piece::Pawn).popcnt() as usize * PAWN_PHASE;
+        phase -= state.pieces(Piece::Knight).popcnt() as usize * KNIGHT_PHASE;
+        phase -= state.pieces(Piece::Bishop).popcnt() as usize * BISHOP_PHASE;
+        phase -= state.pieces(Piece::Rook).popcnt() as usize * ROOK_PHASE;
+        phase -= state.pieces(Piece::Queen).popcnt() as usize * QUEEN_PHASE;
+        phase = (phase * 256 + (TOTAL_PHASE / 2)) / TOTAL_PHASE;
+        let taper = (phase / 256) as f32;
 
         // Value bonus for side to move
         let mut value = 0.1;
